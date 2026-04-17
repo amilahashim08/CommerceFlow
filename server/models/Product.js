@@ -8,6 +8,8 @@ const ProductSchema = new mongoose.Schema({
   image: { type: String, default: '' },
   gallery: [{ type: String }],
   source: { type: String, enum: ['seed', 'custom'], default: 'custom' },
+  soldCount: { type: Number, default: 0 },
+  lastSoldAt: { type: Date, default: null },
 },
 {
   timestamps: true,

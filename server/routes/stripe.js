@@ -1,5 +1,8 @@
 const express = require('express');
 const Stripe = require('stripe');
+const mongoose = require('mongoose');
+const Sale = require('../models/Sale');
+const Product = require('../models/Product');
 
 const router = express.Router();
 
@@ -13,6 +16,37 @@ const getClientBaseUrl = (req) =>
   process.env.FRONTEND_URL ||
   req.get('origin') ||
   'http://localhost:3000';
+
+const recordStripeSaleIfPaid = async (session, transactionId) => {
+  if (!session || session.payment_status !== 'paid' || !transactionId) return;
+
+  const productId = String(session.metadata?.productId || 'unknown-checkout');
+  const productName = String(session.metadata?.productName || session?.line_items?.[0]?.description || 'Checkout payment');
+  const amount = Number(session.amount_total ? session.amount_total / 100 : 0) || 0;
+  const currency = String(session.currency || 'USD').toUpperCase();
+
+  // De-dupe by transaction id.
+  const existing = await Sale.findOne({ transactionId: String(transactionId) }).lean();
+  if (existing) return;
+
+  await Sale.create({
+    transactionId: String(transactionId),
+    gateway: 'stripe',
+    productId,
+    productName,
+    quantity: 1,
+    amount,
+    currency,
+    soldAt: new Date(),
+  });
+
+  if (mongoose.Types.ObjectId.isValid(productId)) {
+    await Product.findByIdAndUpdate(productId, {
+      $inc: { soldCount: 1 },
+      $set: { lastSoldAt: new Date() },
+    });
+  }
+};
 
 router.post('/create-checkout-session', async (req, res) => {
   const { productId, productName, amount, currency = 'USD' } = req.body;
@@ -91,6 +125,15 @@ router.get('/session/:sessionId', async (req, res) => {
       typeof session.payment_intent === 'object'
         ? session.payment_intent.id
         : session.payment_intent;
+
+    // Record successful payments on backend so analytics updates reliably.
+    if (paid) {
+      try {
+        await recordStripeSaleIfPaid(session, paymentIntentId || session.id);
+      } catch (_) {
+        // Analytics recording should not block payment result response.
+      }
+    }
 
     return res.json({
       success: paid,

@@ -1,8 +1,35 @@
 const express = require('express');
 const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
 const Product = require('../models/Product');
 
 const router = express.Router();
+
+const FILE_STORE_PATH = path.join(__dirname, '..', 'data', 'custom-products.json');
+
+const ensureFileStoreDir = () => {
+  const dir = path.dirname(FILE_STORE_PATH);
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+};
+
+const readFileStore = () => {
+  try {
+    if (!fs.existsSync(FILE_STORE_PATH)) return [];
+    const raw = fs.readFileSync(FILE_STORE_PATH, 'utf8');
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+};
+
+const writeFileStore = (items) => {
+  ensureFileStoreDir();
+  fs.writeFileSync(FILE_STORE_PATH, JSON.stringify(items, null, 2), 'utf8');
+};
 
 const seedProducts = [
   {
@@ -136,10 +163,13 @@ const mapDbProduct = (product) => ({
   image: product.image,
   gallery: Array.isArray(product.gallery) ? product.gallery : [],
   source: product.source || 'custom',
+  soldCount: Number(product.soldCount || 0),
+  lastSoldAt: product.lastSoldAt || null,
 });
 
 router.get('/', async (req, res) => {
   try {
+    const fileProducts = readFileStore();
     let dbProducts = [];
     if (mongoose.connection.readyState === 1) {
       const savedProducts = await Product.find({}).sort({ createdAt: -1 });
@@ -147,7 +177,7 @@ router.get('/', async (req, res) => {
     }
 
     res.json({
-      products: [...dbProducts, ...seedProducts],
+      products: [...fileProducts, ...dbProducts, ...seedProducts],
     });
   } catch (error) {
     res.status(500).json({
@@ -157,12 +187,6 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-  if (mongoose.connection.readyState !== 1) {
-    return res.status(503).json({
-      message: 'Database is not connected. Start MongoDB to save custom products.',
-    });
-  }
-
   const { name, category, description, price, image, gallery } = req.body;
 
   if (!name || !category || !price || Number(price) <= 0) {
@@ -172,6 +196,24 @@ router.post('/', async (req, res) => {
   }
 
   try {
+    if (mongoose.connection.readyState !== 1) {
+      const stored = readFileStore();
+      const createdProduct = {
+        id: `file-${Date.now()}`,
+        name: String(name).trim(),
+        category: String(category).trim(),
+        description: description ? String(description).trim() : 'Custom furniture product.',
+        price: Number(price),
+        image: image ? String(image).trim() : '',
+        gallery: Array.isArray(gallery) ? gallery.filter(Boolean).map((item) => String(item).trim()) : [],
+        source: 'custom',
+        createdAt: new Date().toISOString(),
+      };
+      const next = [createdProduct, ...stored].slice(0, 200);
+      writeFileStore(next);
+      return res.status(201).json({ product: createdProduct, stored: 'file' });
+    }
+
     const createdProduct = await Product.create({
       name: String(name).trim(),
       category: String(category).trim(),
@@ -188,6 +230,47 @@ router.post('/', async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: error.message || 'Failed to create product.',
+    });
+  }
+});
+
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  if (String(id).startsWith('file-')) {
+    try {
+      const stored = readFileStore();
+      const next = stored.filter((item) => item.id !== id);
+      writeFileStore(next);
+      return res.json({ success: true, id });
+    } catch (error) {
+      return res.status(500).json({ message: error.message || 'Failed to delete product.' });
+    }
+  }
+
+  if (mongoose.connection.readyState !== 1) {
+    return res.status(503).json({
+      message:
+        'Database is not connected. Check your MongoDB connection (MONGO_URI), credentials, and network access, then restart the server.',
+    });
+  }
+
+  if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+    return res.status(400).json({ message: 'Invalid product id.' });
+  }
+
+  try {
+    const deleted = await Product.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ message: 'Product not found.' });
+    }
+
+    return res.json({
+      success: true,
+      id: String(deleted._id),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || 'Failed to delete product.',
     });
   }
 });

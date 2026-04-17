@@ -1,4 +1,7 @@
 const express = require('express');
+const mongoose = require('mongoose');
+const Sale = require('../models/Sale');
+const Product = require('../models/Product');
 
 const router = express.Router();
 
@@ -38,6 +41,39 @@ const getAccessToken = async () => {
 
   const tokenJson = await tokenResponse.json();
   return tokenJson.access_token;
+};
+
+const recordPaypalSaleIfCompleted = async (captureJson, capture) => {
+  const completed = captureJson?.status === 'COMPLETED';
+  const transactionId = String(capture?.id || captureJson?.id || '');
+  if (!completed || !transactionId) return;
+
+  const purchaseUnit = captureJson?.purchase_units?.[0];
+  const productId = String(purchaseUnit?.reference_id || 'unknown-checkout');
+  const productName = String(purchaseUnit?.description || 'Checkout payment');
+  const amount = Number(capture?.amount?.value || 0) || 0;
+  const currency = String(capture?.amount?.currency_code || 'USD').toUpperCase();
+
+  const existing = await Sale.findOne({ transactionId }).lean();
+  if (existing) return;
+
+  await Sale.create({
+    transactionId,
+    gateway: 'paypal',
+    productId,
+    productName,
+    quantity: 1,
+    amount,
+    currency,
+    soldAt: new Date(),
+  });
+
+  if (mongoose.Types.ObjectId.isValid(productId)) {
+    await Product.findByIdAndUpdate(productId, {
+      $inc: { soldCount: 1 },
+      $set: { lastSoldAt: new Date() },
+    });
+  }
 };
 
 router.post('/create-order', async (req, res) => {
@@ -143,6 +179,14 @@ router.post('/capture-order', async (req, res) => {
 
     const purchaseUnit = captureJson.purchase_units?.[0];
     const capture = purchaseUnit?.payments?.captures?.[0];
+
+    if (captureJson.status === 'COMPLETED') {
+      try {
+        await recordPaypalSaleIfCompleted(captureJson, capture);
+      } catch (_) {
+        // Analytics recording should not break capture response.
+      }
+    }
 
     return res.json({
       success: captureJson.status === 'COMPLETED',

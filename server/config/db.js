@@ -10,11 +10,21 @@ const connectDB = async () => {
   }
 
   try {
-    await mongoose.connect(mongoUri);
+    await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 10_000,
+    });
     console.log('MongoDB connected');
   } catch (err) {
-    console.warn(`MongoDB connection failed: ${err.message}`);
-    console.warn('Backend will continue without MongoDB.');
+    const code = err && typeof err.code !== 'undefined' ? String(err.code) : 'unknown';
+    console.warn(`MongoDB connection failed (code: ${code}): ${err.message}`);
+    console.warn(
+      [
+        'Fix tips:',
+        '- If using MongoDB Atlas: verify username/password in MONGO_URI, and ensure your IP is allowed in Atlas Network Access.',
+        '- If using local MongoDB with auth enabled: include username/password and authSource (often "admin") in MONGO_URI.',
+      ].join('\n')
+    );
+    console.warn('Backend will continue without MongoDB (custom products cannot be saved).');
   }
 };
 
