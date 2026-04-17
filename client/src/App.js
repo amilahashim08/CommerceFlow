@@ -261,7 +261,7 @@ function App() {
 
   const [customProducts, setCustomProducts] = useState(() => loadCustomProductsFromStorage());
 
-  const queryParams = useMemo(() => new URLSearchParams(window.location.search), [pathName]);
+  const queryParams = new URLSearchParams(window.location.search);
   const isResultPage = pathName.startsWith('/payment-result');
   const gatewayParam = queryParams.get('gateway');
   const statusParam = queryParams.get('status');
